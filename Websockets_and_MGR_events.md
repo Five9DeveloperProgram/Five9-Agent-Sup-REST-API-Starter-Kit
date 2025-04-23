@@ -12,7 +12,7 @@ The "payload" object for that message will contain the new metadata.  Here is th
             "messageId": "106595212",
             "userId": "3578927",
             "correlationId": "5eff49b1-9f50-4d60-8bcd-61a6fcc8c278",
-            "userName": "awilley@aw_tam",
+            "userName": "someUserName@onyourdomain",
             "timeStamp": 1661875378672,
             "tenantId": "131792",
             "broadCast": false
