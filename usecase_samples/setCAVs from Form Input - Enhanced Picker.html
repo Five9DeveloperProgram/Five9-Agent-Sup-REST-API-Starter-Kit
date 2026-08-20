@@ -578,6 +578,11 @@
                             button.disabled = false;
                             button.className = "bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline";
                         });
+                        document.querySelectorAll('.saveAllButton').forEach(button => {
+                            button.textContent = "Update";
+                            button.disabled = false;
+                            button.className = "bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline";
+                        });
                         
                     } catch (error) {
                         console.error('Bulk update failed:', error);

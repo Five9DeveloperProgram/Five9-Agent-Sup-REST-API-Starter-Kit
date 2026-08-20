@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Five9 queue alerts delivered as browser operating-system notifications" />
+    <title>Queue Alert - OS Notifications</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@^2.0/dist/tailwind.min.css" rel="stylesheet" />
+</head>
+<body class="bg-gray-100 text-gray-900">
+    <main class="max-w-5xl mx-auto p-4 sm:p-8">
+        <header class="mb-6">
+            <h1 class="text-2xl font-semibold">Queue Alert</h1>
+            <p class="mt-1 text-sm text-gray-600">Desktop notifications for calls waiting in your assigned skills.</p>
+        </header>
+
+        <section class="bg-white border border-gray-200 shadow-sm p-5 mb-6" aria-label="Alert settings">
+            <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                    <label for="callThreshold" class="block text-sm font-medium text-gray-700">Call threshold</label>
+                    <input id="callThreshold" type="number" min="1" value="1" class="mt-1 w-28 border border-gray-300 px-3 py-2" />
+                    <p class="mt-1 text-xs text-gray-500">An alert is sent when a skill reaches this many queued calls.</p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    <button id="enableNotifications" type="button" class="bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800">Enable notifications</button>
+                    <button id="testNotification" type="button" class="border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Send test alert</button>
+                </div>
+            </div>
+            <p id="notificationStatus" class="mt-4 text-sm text-gray-600" role="status">Checking notification permission...</p>
+        </section>
+
+        <section class="bg-white border border-gray-200 shadow-sm" aria-label="Queue status">
+            <div class="border-b border-gray-200 px-5 py-4 flex items-center justify-between">
+                <h2 class="font-semibold">My skill queues</h2>
+                <span id="connectionStatus" class="text-sm text-gray-500" role="status">Initializing session...</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-gray-50 text-xs uppercase text-gray-500">
+                        <tr>
+                            <th class="px-5 py-3 font-medium">Skill</th>
+                            <th class="px-5 py-3 font-medium">Calls waiting</th>
+                            <th class="px-5 py-3 font-medium">Callbacks</th>
+                            <th class="px-5 py-3 font-medium">Longest wait</th>
+                        </tr>
+                    </thead>
+                    <tbody id="queueRows" class="divide-y divide-gray-200">
+                        <tr><td colspan="4" class="px-5 py-6 text-center text-gray-500">Loading assigned skills...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script type="text/javascript">
+        const CALLS_IN_QUEUE_EVENT_ID = 29;
+        const skillNames = new Map();
+        const queueStates = new Map();
+        let latestQueuePayload = {};
+
+        class F9SocketEvent {
+            constructor(eventName, handler, session) {
+                this.eventName = eventName;
+                this.handle = handler;
+                this.session = session;
+            }
+        }
+
+        class Five9Session {
+            constructor() {
+                this.freedomMetadataURL = "https://app.five9.com/appsvcs/rs/svc/auth/metadata";
+                this.randomSocketKey = Math.floor(Math.random() * 1000000).toString();
+                this.contextPaths = {
+                    agentRest: "/appsvcs/rs/svc",
+                    agentWebsocket: `/appsvcs/ws/${this.randomSocketKey}_agent`,
+                };
+                this.newMetadata = null;
+                this.socket = null;
+                this.pingIntervalHandle = null;
+                this.commonSocketEventHandlers = {
+                    1002: new F9SocketEvent("EVENT_METADATA_UPDATE", (eventData) => {
+                        this.newMetadata = eventData.payLoad;
+                    }, this),
+                    73: new F9SocketEvent("EVENT_MIGRATION_COMPLETE", async () => {
+                        if (this.newMetadata) {
+                            await this.reinitializeWebSocket(this.newMetadata);
+                        }
+                    }, this),
+                };
+            }
+
+            setEndpoints(metadata) {
+                const apiUrl = metadata.dataCenters[0].apiUrls[0];
+                this.baseApiUrl = `https://${apiUrl.host}:${apiUrl.port}`;
+                this.baseWebsocketUrl = `wss://${apiUrl.host}:${apiUrl.port}`;
+                this.agentApiUrl = `${this.baseApiUrl}${this.contextPaths.agentRest}`;
+                this.agentWebsocketUrl = `${this.baseWebsocketUrl}${this.contextPaths.agentWebsocket}`;
+            }
+
+            async getSessionMetadata() {
+                const response = await fetch(this.freedomMetadataURL, { credentials: "include" });
+                if (!response.ok) {
+                    throw new Error("Unable to retrieve Five9 session metadata.");
+                }
+
+                const metadataResponse = await response.json();
+                this.f9OrgId = metadataResponse.orgId;
+                this.f9UserId = metadataResponse.userId;
+                this.setEndpoints(metadataResponse.metadata);
+            }
+
+            async getAgentSkills() {
+                const response = await fetch(`${this.agentApiUrl}/agents/${this.f9UserId}/skills`, {
+                    credentials: "include",
+                });
+                if (!response.ok) {
+                    throw new Error("Unable to retrieve assigned skills.");
+                }
+                return response.json();
+            }
+
+            async reinitializeWebSocket(newMetadata) {
+                this.setEndpoints(newMetadata);
+                await this.connectAgentWebsocket(queueEventHandlers);
+            }
+
+            async connectAgentWebsocket(eventHandlers) {
+                const handlers = { ...eventHandlers, ...this.commonSocketEventHandlers };
+                if (this.socket) {
+                    this.socket.close();
+                }
+
+                const socket = new WebSocket(this.agentWebsocketUrl);
+                let pingIntervalHandle = null;
+                this.socket = socket;
+                socket.addEventListener("open", () => {
+                    if (this.socket !== socket) {
+                        return;
+                    }
+                    setConnectionStatus("Connected");
+                    pingIntervalHandle = window.setInterval(() => {
+                        if (socket.readyState === WebSocket.OPEN) {
+                            socket.send("ping");
+                        }
+                    }, 15000);
+                });
+
+                socket.addEventListener("message", (message) => {
+                    try {
+                        const eventData = JSON.parse(message.data);
+                        if (window.location.search.includes("verbose=true")) {
+                            console.log(eventData.context.eventId, eventData.context.eventReason, eventData);
+                        }
+                        const handler = handlers[eventData.context.eventId];
+                        if (handler) {
+                            handler.handle(eventData);
+                        }
+                    } catch (error) {
+                        console.error("Unable to process Five9 websocket message.", error);
+                    }
+                });
+
+                socket.addEventListener("error", () => {
+                    if (this.socket === socket) {
+                        setConnectionStatus("WebSocket error", true);
+                    }
+                });
+                socket.addEventListener("close", () => {
+                    window.clearInterval(pingIntervalHandle);
+                    if (this.socket === socket) {
+                        setConnectionStatus("Disconnected", true);
+                    }
+                });
+            }
+        }
+
+        const queueEventHandlers = {
+            [CALLS_IN_QUEUE_EVENT_ID]: new F9SocketEvent("CALLS_IN_QUEUE", (eventData) => {
+                latestQueuePayload = eventData.payLoad || {};
+                updateQueues(latestQueuePayload);
+            }),
+        };
+
+        function notificationPermissionMessage() {
+            if (!("Notification" in window)) {
+                return "This browser does not support operating-system notifications.";
+            }
+            if (Notification.permission === "granted") {
+                return "Notifications are enabled.";
+            }
+            if (Notification.permission === "denied") {
+                return "Notifications are blocked in this browser. Update the site permission to enable alerts.";
+            }
+            return "Enable notifications to receive queue alerts outside this page.";
+        }
+
+        function refreshNotificationStatus() {
+            document.getElementById("notificationStatus").textContent = notificationPermissionMessage();
+            document.getElementById("enableNotifications").disabled = !(("Notification" in window) && Notification.permission === "default");
+        }
+
+        async function enableNotifications() {
+            if (!("Notification" in window)) {
+                refreshNotificationStatus();
+                return;
+            }
+            await Notification.requestPermission();
+            refreshNotificationStatus();
+        }
+
+        function showQueueNotification(title, body) {
+            if (!("Notification" in window) || Notification.permission !== "granted") {
+                return;
+            }
+            const notification = new Notification(title, { body, tag: `five9-queue-${title}`, renotify: true });
+            notification.onclick = () => window.focus();
+        }
+
+        function getThreshold() {
+            return Math.max(1, Number.parseInt(document.getElementById("callThreshold").value, 10) || 1);
+        }
+
+        function formatDuration(totalSeconds) {
+            const seconds = Math.max(0, Number(totalSeconds) || 0);
+            const minutes = Math.floor(seconds / 60);
+            return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+        }
+
+        function updateQueues(queuePayload) {
+            const threshold = getThreshold();
+            const queueRows = document.getElementById("queueRows");
+            const entries = Object.entries(queuePayload);
+            queueRows.replaceChildren();
+
+            if (entries.length === 0) {
+                queueRows.innerHTML = '<tr><td colspan="4" class="px-5 py-6 text-center text-gray-500">No queue data received yet.</td></tr>';
+                return;
+            }
+
+            for (const [skillId, skillData] of entries) {
+                const callsWaiting = Number(skillData.inQueueCallCount) || 0;
+                const wasOverThreshold = queueStates.get(skillId) || false;
+                const isOverThreshold = callsWaiting >= threshold;
+                const skillName = skillNames.get(skillId) || `Skill ${skillId}`;
+
+                if (isOverThreshold && !wasOverThreshold) {
+                    showQueueNotification(
+                        `Queue alert: ${skillName}`,
+                        `${callsWaiting} call${callsWaiting === 1 ? "" : "s"} waiting. Longest wait: ${formatDuration(skillData.longestTimeInQueueSec)}.`
+                    );
+                }
+                queueStates.set(skillId, isOverThreshold);
+
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td class="px-5 py-3 font-medium text-gray-900"></td>
+                    <td class="px-5 py-3"></td>
+                    <td class="px-5 py-3"></td>
+                    <td class="px-5 py-3"></td>`;
+                const cells = row.querySelectorAll("td");
+                cells[0].textContent = skillName;
+                cells[1].textContent = callsWaiting.toString();
+                cells[2].textContent = (Number(skillData.inQueueCallbackCount) || 0).toString();
+                cells[3].textContent = formatDuration(skillData.longestTimeInQueueSec);
+                if (isOverThreshold) {
+                    row.className = "bg-yellow-50";
+                }
+                queueRows.appendChild(row);
+            }
+        }
+
+        function setConnectionStatus(message, isError = false) {
+            const status = document.getElementById("connectionStatus");
+            status.textContent = message;
+            status.className = isError ? "text-sm text-red-700" : "text-sm text-green-700";
+        }
+
+        document.getElementById("enableNotifications").addEventListener("click", enableNotifications);
+        document.getElementById("testNotification").addEventListener("click", () => {
+            showQueueNotification("Five9 queue alert test", "Operating-system notifications are ready for queue alerts.");
+        });
+        document.getElementById("callThreshold").addEventListener("change", () => updateQueues(latestQueuePayload));
+        window.addEventListener("unload", () => {
+            if (window.five9Session && window.five9Session.socket) {
+                window.five9Session.socket.close();
+            }
+        });
+
+        document.addEventListener("DOMContentLoaded", async () => {
+            refreshNotificationStatus();
+            try {
+                window.five9Session = new Five9Session();
+                await window.five9Session.getSessionMetadata();
+                const skills = await window.five9Session.getAgentSkills();
+                skills.forEach((skill) => skillNames.set(String(skill.id), skill.name));
+                document.getElementById("queueRows").innerHTML = '<tr><td colspan="4" class="px-5 py-6 text-center text-gray-500">Waiting for queue updates...</td></tr>';
+                setConnectionStatus("Connecting...");
+                await window.five9Session.connectAgentWebsocket(queueEventHandlers);
+            } catch (error) {
+                console.error("Unable to initialize the queue alert sample.", error);
+                setConnectionStatus("Unable to initialize. Sign in to Five9 and reload.", true);
+                document.getElementById("queueRows").innerHTML = '<tr><td colspan="4" class="px-5 py-6 text-center text-red-700">Unable to load Five9 session data.</td></tr>';
+            }
+        });
+    </script>
+</body>
+</html>

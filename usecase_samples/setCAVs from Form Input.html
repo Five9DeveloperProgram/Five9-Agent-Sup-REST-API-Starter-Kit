@@ -13,45 +13,22 @@
 <body class="bg-gray-100">
     <main class="min-h-screen flex items-center justify-center">
         <div class="bg-white shadow-xl rounded-lg p-8">
-            <p class="text-l font-bold mb-1">See source for sample structure of an input form. Note the Javascript
-                handler that invokes the CAV update methods on the API</p>
-            <p class="text-gray-700 text-sm font-bold mb-5">Update the "id" property of the select element and the
-                "data-select-id" of the button to a CAV group.variableName on your domain.</p>
-                <p class="text-gray-700 text-sm font-bold mb-5">IMPORTANT: The target CAVs must be on the campaign profile layout as read/write</p>
+            <p class="text-gray-700 text-sm font-bold mb-5">IMPORTANT: The target CAVs must be on the campaign profile
+                layout as read/write</p>
+
             <div class="space-y-4">
                 <div>
-
-                    <label for="Program.Program Name" class="block text-gray-700 text-sm font-bold mb-2">Program of
-                        Interest:</label>
-                    <select id="Program.Program Name"
-                        class="cav-form block w-full p-2 border border-gray-300 rounded shadow">
-                        <option value="Computer Science">Computer Science</option>
-                        <option value="Criminal Justice">Criminal Justice</option>
-                        <option value="Etruscan Tomb Carving">Etruscan Tomb Carving</option>
-                        <option value="Communication Studies">Communication Studies</option>
-                    </select>
+                    <label for="Demo.complianceMessage" class="block text-gray-700 text-sm font-bold mb-2">Compliance
+                        Message</label>
+                    <textarea id="Demo.complianceMessage"
+                        class="cav-form block w-full p-2 border border-gray-300 rounded shadow"
+                        rows="4">For confirmation, the payment we are scheduling today includes your regular monthly payments of $3,870.52, Additional Principal of $50.00, Additional Escrow of $100.00, Suspense of $150.00, Late Charge Balance of $114.52, for a total of $4,285.04 will be debited from your account ending in 6789 and the routing number of 031000053 on 06/30/2025. Do I have your recorded authorization to process this payment?</textarea>
                 </div>
-                <button data-select-id="Program.Program Name"
-                    class="saveButton bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline w-full transition-colors duration-150">Save</button>
+                <button data-select-id="Demo.complianceMessage"
+                    class="saveButton bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline w-full transition-colors duration-150">Save
+                    and add Conference</button>
             </div>
-            <div class="space-y-4">
-                <div>
 
-                    <label for="Program.loan_number" class="block text-gray-700 text-sm font-bold mb-2">Program Loan Number:</label>
-                    <input id="Program.loan_number"
-                        class="cav-form block w-full p-2 border border-gray-300 rounded shadow">
-                    </input>
-                </div>
-                <button data-select-id="Program.loan_number"
-                    class="saveButton bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline w-full transition-colors duration-150">Save</button>
-            </div>
-            <hr class="my-4 border-gray-300">
-
-            <div class="space-y-4">
-                <button
-                    class="saveAllButton bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline w-full transition-colors duration-150 mt-4">Save
-                    All</button>
-            </div>
         </div>
     </main>
 
@@ -450,6 +427,113 @@
                 return currentCalls;
             }
 
+            /**
+             * addCampaignToConference adds a campaign as a participant to an active call.
+             *
+             * Five9 VCC Agent API Method:
+             *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+             *
+             * @param {string} callId - The ID of the active call.
+             * @param {string} campaignId - The ID of the campaign to add.
+             * @param {boolean} warm - Whether to use warm transfer (default: false).
+             * @returns {Promise<Object|null>} The API response.
+             */
+            async addCampaignToConference(callId, campaignId, warm = false) {
+                const participant = {
+                    campaignId: campaignId,
+                    warm: warm
+                };
+
+                const endpointURL = `${this.base_api_url_agents}/agents/${this.f9UserId}/interactions/calls/${callId}/add_campaign_to_conference`;
+                console.log(endpointURL);
+
+                return this.f9ApiMethod(endpointURL, "POST", participant);
+            }
+
+            /**
+             * getCampaignInfo returns a CampaignInfo object, requires a campaignId.
+             *
+             * Five9 VCC Agent API Method:
+             *   GET /orgs/{orgId}/campaigns/{campaignId}
+             *
+             * Five9 Response sample:
+             *   {
+             *       "id":"2494",
+             *       "name":"Inbound Service",
+             *       "campaignType":"INBOUND",
+             *       "customSource":null,
+             *       "customIcon":null,
+             *       "assistances":[],
+             *       "attributes":[],
+             *       "avatarURL":null,
+             *       "chatWelcomeMessage":null,
+             *       "chatTerminateMessage":null,
+             *       "outEmail":null,
+             *       "skillIds":[],
+             *       "state":"RUNNING",
+             *       "flags":["PASS_CONTACTS_ANI_FOR_3RD_PARTY_CONFERENCES"]
+             *   }
+             *
+             * Method return sample:
+             *   <object campaignInfo>
+             */
+            async getCampaignInfo(campaignId) {
+                const endpointURL = `${this.base_api_url_agents}/orgs/${this.f9OrgId}/campaigns/${campaignId}`;
+                return this.f9ApiMethod(endpointURL, "GET");
+            }
+
+            /**
+             * getCampaignInfo returns a CampaignInfo object, requires a campaignId.
+             *
+             * Five9 VCC Agent API Method:
+             *   GET /orgs/{orgId}/campaigns
+             *
+             *
+             * Method return sample:
+             *   <object campaignInfo>
+             */
+            async getCampaigns(campaignId) {
+                const endpointURL = `${this.base_api_url_agents}/orgs/${this.f9OrgId}/campaigns`;
+                return this.f9ApiMethod(endpointURL, "GET");
+            }
+
+            /**
+             * getAgentCampaigns returns a dictionary of campaignInfo objects the agent skills give them access to, with the campaign name as the key.
+             *
+             * Five9 VCC Agent API Method:
+             *   GET /agents/{agentId}/campaigns_config
+             *
+             * Five9 Response sample:
+             * ["1234", "43802", "23423"]
+             *
+             * method return sample:
+             * {"Inbound Service": <object campaignInfo>, "Outbound Outreach": <object campaignInfo>}
+             */
+            async getAgentCampaigns() {
+                const endpointURL = `${this.base_api_url_agents}/agents/${this.f9UserId}/campaigns_config`;
+                console.log(endpointURL);
+
+                const response = await this.f9ApiMethod(endpointURL, "GET");
+                if (response && response.campaignIds) {
+                    const agentCampaignsInfo = {};
+
+                    // Use Promise.all to get all campaign info in parallel
+                    const campaignPromises = response.campaignIds.map(campaignId =>
+                        this.getCampaignInfo(campaignId)
+                    );
+
+                    const campaigns = await Promise.all(campaignPromises);
+                    campaigns.forEach(campaign => {
+                        if (campaign && campaign.name) {
+                            agentCampaignsInfo[campaign.name] = campaign;
+                        }
+                    });
+
+                    return agentCampaignsInfo;
+                }
+                return response;
+            }
+
             async getDomainCavs() {
                 let endpointUrl = `${this.base_api_url_agents}/orgs/${this.f9OrgId}/call_variables`;
                 let cavsResponse = await this.f9ApiMethod(endpointUrl, "GET");
@@ -508,9 +592,9 @@
                 });
 
                 // Handle the Save All button click
-                document.querySelector('.saveAllButton').addEventListener('click', function () {
-                    bulkSaveCAVs(session);
-                });
+                // document.querySelector('.saveAllButton').addEventListener('click', function () {
+                //     bulkSaveCAVs(session);
+                // });
 
                 async function saveCAV(button) {
                     button.textContent = "Processing";
@@ -534,6 +618,27 @@
                     try {
                         const updateResponse = await session.updateCavs(cavsToUpdate);
                         console.log(`CAV Update Response for ${cavName}:`, updateResponse);
+
+                        // After saving CAVs, get campaign info and add 'Transfer Campaign' to conference
+                        try {
+                            console.log("Fetching agent campaigns...");
+                            const campaigns = await session.getCampaigns().then(campaigns => {
+                                // look for the Transfer Campaign in the array
+                                const transferCampaign = campaigns.find(campaign => campaign.name === "Transfer Campaign");
+                                console.log("Agent Campaigns:", campaigns);
+                                
+                                console.log("Transfer Campaign:", transferCampaign);
+                                if (transferCampaign) {
+                                    session.addCampaignToConference(session.currentCall.id, transferCampaign.id);
+                                    console.log('Transfer Campaign added to conference:', transferCampaign.id);
+                                } else {
+                                    console.warn('Transfer Campaign not found or no active call.');
+                                }
+                            });
+
+                        } catch (err) {
+                            console.error('Error adding Transfer Campaign to conference:', err);
+                        }
 
                         button.textContent = "Update";
                         button.disabled = false;
@@ -568,7 +673,7 @@
                             button.disabled = false;
                             button.className = "bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline";
                         });
-                        
+
                     } catch (error) {
                         console.error('Bulk update failed:', error);
                     }

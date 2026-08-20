@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description"
+        content="Campaign script to set Salesforce.id CAV via SweetAlert popup when call arrives" />
+    <title>Set Salesforce ID on Call Arrival - Five9 VCC Agent REST API</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@^2.0/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        /* SweetAlert2 Custom Styling */
+        .swal2-popup {
+            border-radius: 0.75rem !important;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important;
+        }
+        .swal2-title {
+            font-weight: 600 !important;
+            color: #374151 !important;
+        }
+        .swal2-content {
+            color: #6b7280 !important;
+        }
+        .swal2-confirm {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            border: none !important;
+            border-radius: 0.5rem !important;
+            padding: 0.75rem 1.5rem !important;
+            font-weight: 500 !important;
+        }
+        .swal2-cancel {
+            background: #f3f4f6 !important;
+            color: #374151 !important;
+            border: none !important;
+            border-radius: 0.5rem !important;
+            padding: 0.75rem 1.5rem !important;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100">
+    <main class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white shadow-xl rounded-lg p-8 max-w-2xl w-full">
+            <div class="gradient-bg text-white p-6 rounded-lg mb-6">
+                <h1 class="text-2xl font-bold mb-2">Salesforce ID Campaign Script</h1>
+                <p class="text-sm opacity-90">This script will prompt for a Salesforce ID when a call arrives and set it as a CAV</p>
+            </div>
+            
+            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <svg class="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm text-yellow-700 font-medium">
+                            <strong>IMPORTANT:</strong> The CAV "Salesforce.id" must exist in your domain and be set as read/write on the campaign profile layout.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <h3 class="text-lg font-semibold text-gray-800 mb-2">How it works:</h3>
+                    <ol class="list-decimal list-inside space-y-2 text-gray-700">
+                        <li>When a call arrives, a SweetAlert popup will appear</li>
+                        <li>Agent enters the Salesforce ID into the popup</li>
+                        <li>The ID is automatically set as the "Salesforce.id" CAV</li>
+                        <li>The CAV can be used for screen pops, transfers, or dispositions</li>
+                    </ol>
+                </div>
+
+                <div class="bg-blue-50 rounded-lg p-4">
+                    <h3 class="text-lg font-semibold text-blue-800 mb-2">Status:</h3>
+                    <p id="status" class="text-blue-700">Initializing...</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script type="text/javascript">
+        // Track which calls have already been prompted for
+        const promptedCalls = new Set();
+
+        // The name of the CAV to set (must exist in your domain)
+        const SALESFORCE_CAV_NAME = "Salesforce.id";
+
+        class f9socketEvent {
+            constructor(eventName, handler, session) {
+                this.eventName = eventName;
+                this.handle = handler;
+                this.session = session;
+            }
+        }
+
+        /**
+         * The constructor function for the Five9Session class.
+         *
+         * @class
+         * @classdesc Represents a Five9 session with various helper methods for interacting with the Five9 API.
+         */
+        class Five9Session {
+            /**
+             * Creates a new Five9Session instance with default properties.
+             */
+            constructor() {
+                // Set the Freedom Metadata URL
+                this.freedomMetadataURL =
+                    "https://app.five9.com/appsvcs/rs/svc/auth/metadata";
+
+                // Generate a random socket key
+                this.randomSocketKey = (Math.random() * 1000 + 1)
+                    .toString()
+                    .split(".")[0];
+
+                // Set the context paths for various API endpoints
+                this.contextPaths = {
+                    agent_rest: "/appsvcs/rs/svc",
+                    agent_str: "/strsvcs/rs/svc",
+                    sup_rest: "/supsvcs/rs/svc",
+                    websocket_agent: `/appsvcs/ws/${this.randomSocketKey}_agent`,
+                    websocket_super: `/supsvcs/sws/${this.randomSocketKey}_super`,
+                };
+
+                // Set the default XHR options
+                this.defaultXhrOptions = {
+                    credentials: "include",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                };
+
+                // placeholder for updated metadata if provided by a websocket event
+                this.newMetadata = null;
+
+                this.commonSocketEventHanders = {
+                    1002: new f9socketEvent(
+                        "EVENT_METADATA_UPDATE",
+                        function (eventData) {
+                            console.log(this.eventName, eventData.context.eventReason);
+                            console.log(eventData);
+                            this.session.newMetadata = eventData.payLoad;
+                        },
+                        this
+                    ),
+                    73: new f9socketEvent(
+                        "EVENT_MIGRATION_COMPLETE",
+                        async function (eventData) {
+                            console.log(this.eventName, eventData.context.eventReason);
+                            console.log(eventData);
+                            this.session.base_api_url_agents =
+                                this.session.newMetadata.dataCenters[0].apiUrls.appsvcs +
+                                this.session.contextPaths.agent_rest;
+                            this.session.base_api_url_supervisors =
+                                this.session.newMetadata.dataCenters[0].apiUrls.supsvcs +
+                                this.session.contextPaths.sup_rest;
+                            this.session.base_websocket_api_url_agent =
+                                this.session.newMetadata.dataCenters[0].apiUrls.appsvcs +
+                                this.session.contextPaths.websocket_agent;
+                            this.session.base_websocket_api_url_super =
+                                this.session.newMetadata.dataCenters[0].apiUrls.supsvcs +
+                                this.session.contextPaths.websocket_super;
+                            this.session.baseURL =
+                                this.session.newMetadata.dataCenters[0].apiUrls.appsvcs;
+                            this.session.connectAgentWebsocket();
+                        },
+                        this
+                    ),
+                };
+
+                this.currentCall = null;
+                this.CAVs = null;
+            }
+
+            /**
+             * Retrieve metadata about the session from the provided metadata URL.
+             *
+             * @async
+             * @function
+             * @returns {Promise<boolean>} Returns a Promise that resolves to true if metadata is obtained successfully, false otherwise.
+             */
+            async getSessionMetadata() {
+                try {
+                    // Make an API request to the Freedom Metadata URL
+                    const result = await this.f9ApiMethod(
+                        this.freedomMetadataURL,
+                        "GET"
+                    );
+
+                    // Extract and assign various properties from the result
+                    this.userId = result.userId;
+                    this.orgId = result.orgId;
+                    this.f9OrgId = result.orgId;
+                    this.f9UserId = result.userId;
+                    this.farmId = result.farmId;
+
+                    // Extract and build API URLs from the data centers information
+                    this.base_api_url_agents =
+                        result.dataCenters[0].apiUrls.appsvcs +
+                        this.contextPaths.agent_rest;
+                    this.base_api_url_supervisors =
+                        result.dataCenters[0].apiUrls.supsvcs +
+                        this.contextPaths.sup_rest;
+                    this.base_websocket_api_url_agent =
+                        result.dataCenters[0].apiUrls.appsvcs +
+                        this.contextPaths.websocket_agent;
+                    this.base_websocket_api_url_super =
+                        result.dataCenters[0].apiUrls.supsvcs +
+                        this.contextPaths.websocket_super;
+
+                    // Build additional URLs for reference
+                    this.baseURL = result.dataCenters[0].apiUrls.appsvcs;
+
+                    return true;
+                } catch (e) {
+                    console.log(e);
+                    return false;
+                }
+            }
+
+            /**
+             * Connect to a WebSocket endpoint and process events using provided event handlers.
+             *
+             * @param {string} url - The WebSocket endpoint URL.
+             * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
+             * @returns {WebSocket} Returns the WebSocket connection object.
+             */
+            async connectSocket(url, f9socketEventHandlers) {
+                // Construct the complete WebSocket URL
+                const thisSocketUrl = `wss:${url}`;
+                const f9Socket = new WebSocket(thisSocketUrl);
+                console.log(`Connecting to ${thisSocketUrl}`);
+
+                // Set up an interval to send periodic ping messages to keep the connection alive
+                const pingIntervalHandle = window.setInterval(function () {
+                    f9Socket.send(
+                        JSON.stringify({
+                            context: {
+                                eventId: -1,
+                            },
+                        })
+                    );
+                }, 20000);
+
+                // Set up the 'onopen' event handler for the WebSocket
+                f9Socket.onopen = () => {
+                    console.log("Connected!");
+                };
+
+                // Set up the 'onmessage' event handler for the WebSocket
+                f9Socket.addEventListener("message", function (message) {
+                    const eventData = JSON.parse(message.data);
+
+                    // Check if a handler exists for the event ID and call it
+                    if (f9socketEventHandlers[eventData.context.eventId] != null) {
+                        f9socketEventHandlers[eventData.context.eventId].handle(eventData);
+                    } else {
+                        // Log unhandled events for debugging
+                        // console.log(`No handler for eventId: ${eventData.context.eventId}`, eventData)
+                    }
+                });
+
+                // Set up the 'onerror' event handler for the WebSocket
+                f9Socket.addEventListener("error", function (error) {
+                    console.log(error);
+                });
+
+                // Set up the 'onclose' event handler for the WebSocket
+                f9Socket.onclose = function () {
+                    // Clear the ping interval when the WebSocket connection is closed
+                    window.clearInterval(pingIntervalHandle);
+                };
+
+                // Add an event listener for the 'unload' event to close the WebSocket connection when the page is unloaded
+                window.addEventListener("unload", function () {
+                    f9Socket.close();
+                });
+                return f9Socket;
+            }
+
+            /**
+             * Connect to the agent WebSocket endpoint and process events using provided event handlers.
+             *
+             * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
+             */
+            async connectAgentWebsocket() {
+                let f9SocketEventHandlersAgent = {
+                    4: new f9socketEvent(
+                        "EVENT_CALL_UPDATED",
+                        async function (eventData) {
+                            console.log(`*** CALL UPDATED: ${this.eventName} ***`);
+                            console.log(this.eventName, eventData.context.eventReason);
+                            console.log(eventData);
+
+                            this.session.currentCall = eventData.payLoad;
+
+                            // Check if call is in TALKING state and hasn't been prompted yet
+                            if (eventData.payLoad.state === "TALKING" && !promptedCalls.has(eventData.payLoad.id)) {
+                                promptedCalls.add(eventData.payLoad.id);
+                                
+                                console.log("*** CALL ARRIVED - PROMPTING FOR SALESFORCE ID ***");
+                                
+                                // Show SweetAlert popup
+                                const { value: salesforceId } = await Swal.fire({
+                                    title: 'Enter Salesforce ID',
+                                    input: 'text',
+                                    inputLabel: 'Salesforce Contact/Account ID',
+                                    inputPlaceholder: 'Enter the Salesforce ID...',
+                                    showCancelButton: true,
+                                    confirmButtonText: 'Set CAV',
+                                    cancelButtonText: 'Skip',
+                                    inputValidator: (value) => {
+                                        if (!value) {
+                                            return 'Please enter a Salesforce ID';
+                                        }
+                                    },
+                                    allowOutsideClick: false,
+                                    customClass: {
+                                        confirmButton: 'swal2-confirm',
+                                        cancelButton: 'swal2-cancel'
+                                    }
+                                });
+
+                                if (salesforceId) {
+                                    console.log(`Setting Salesforce ID: ${salesforceId}`);
+                                    
+                                    // Get domain CAVs to find the Salesforce.id CAV
+                                    const domainCAVs = await this.session.getDomainCavs();
+                                    
+                                    if (this.session.CAVs && this.session.CAVs.Salesforce && this.session.CAVs.Salesforce.id) {
+                                        const cavsToUpdate = {};
+                                        cavsToUpdate[this.session.CAVs.Salesforce.id.id] = salesforceId;
+                                        
+                                        const updateResponse = await this.session.updateCavs(cavsToUpdate);
+                                        
+                                        if (updateResponse && updateResponse.status !== "ERROR") {
+                                            console.log("*** SALESFORCE ID CAV UPDATED SUCCESSFULLY ***");
+                                            Swal.fire({
+                                                icon: 'success',
+                                                title: 'Success!',
+                                                text: `Salesforce ID "${salesforceId}" has been set`,
+                                                timer: 2000,
+                                                showConfirmButton: false
+                                            });
+                                        } else {
+                                            console.error("*** ERROR UPDATING CAV ***", updateResponse);
+                                            Swal.fire({
+                                                icon: 'error',
+                                                title: 'Error',
+                                                text: 'Failed to update CAV. Check console for details.'
+                                            });
+                                        }
+                                    } else {
+                                        console.error(`*** CAV "${SALESFORCE_CAV_NAME}" NOT FOUND ***`);
+                                        Swal.fire({
+                                            icon: 'error',
+                                            title: 'CAV Not Found',
+                                            text: `The CAV "${SALESFORCE_CAV_NAME}" was not found. Make sure it exists in your domain and is configured on the campaign.`
+                                        });
+                                    }
+                                } else {
+                                    console.log("*** USER SKIPPED SALESFORCE ID ENTRY ***");
+                                }
+                            }
+                        },
+                        this
+                    ),
+                    5: new f9socketEvent(
+                        "EVENT_CALL_REMOVED",
+                        function (eventData) {
+                            console.log("*** CALL REMOVED ***");
+                            this.session.currentCall = null;
+                            // Clean up the prompted calls set when call ends
+                            promptedCalls.delete(eventData.payLoad.id);
+                        },
+                        this
+                    )
+                };
+                
+                // merge the common socket event handlers with the agent specific ones
+                f9SocketEventHandlersAgent = Object.assign(
+                    f9SocketEventHandlersAgent,
+                    this.commonSocketEventHanders
+                );
+
+                return this.connectSocket(
+                    this.base_websocket_api_url_agent,
+                    f9SocketEventHandlersAgent
+                );
+            }
+
+            /**
+             * A generic asynchronous method for making API requests to the agent and supervisor REST API.
+             *
+             * @async
+             * @function
+             * @param {string} endpointURL - The URL of the API endpoint.
+             * @param {string} method - The HTTP request method (e.g., "GET", "POST", "PUT", "DELETE").
+             * @param {Object} [endpointOptions] - Optional configuration object for the request, such as headers.
+             * @param {Object|string} [payload] - Optional request payload, if applicable.
+             * @returns {Promise<Object|null>} Returns a Promise that resolves to the JSON response object or null if there was an error.
+             * @throws {Error} If the response is not ok.
+             */
+            async f9ApiMethod(
+                endpointURL,
+                method,
+                payload = undefined,
+                endpointOptions = undefined
+            ) {
+                // Create the options object for the fetch request
+                const options = Object.assign({}, this.defaultXhrOptions);
+                if (endpointOptions != undefined) {
+                    Object.assign(options, endpointOptions);
+                }
+
+                // Set the request method
+                options.method = method;
+
+                // If there's a payload, add it to the request body
+                if (payload != undefined) {
+                    options.body = JSON.stringify(payload);
+                }
+
+                let response;
+
+                try {
+                    // Make the API request
+                    response = await fetch(endpointURL, options);
+                } catch (err) {
+                    console.log(err);
+                    return err;
+                }
+
+                // If the response is OK, parse and return the JSON
+                if (response.ok) {
+                    let result;
+                    try {
+                        result = await response.json();
+                    } catch (e) {
+                        result = await response.text();
+                    }
+                    return result;
+                } else {
+                    // If there's an error, throw it
+                    throw new Error(`Error ${response.status}: ${response.statusText}`);
+                }
+            }
+
+            /**
+             * Get the available CAVs (Call Attached Variables) for the domain
+             */
+            async getDomainCavs() {
+                let endpointUrl = `${this.base_api_url_agents}/orgs/${this.f9OrgId}/call_variables`;
+                let cavs = await this.f9ApiMethod(endpointUrl, "GET");
+                
+                // Organize CAVs into a nested object structure for easy access
+                this.CAVs = {};
+                cavs.forEach(cav => {
+                    let cavParts = cav.name.split(".");
+                    if (cavParts.length === 1) {
+                        this.CAVs[cav.name] = cav;
+                    } else if (cavParts.length === 2) {
+                        if (!this.CAVs[cavParts[0]]) {
+                            this.CAVs[cavParts[0]] = {};
+                        }
+                        this.CAVs[cavParts[0]][cavParts[1]] = cav;
+                    } else if (cavParts.length === 3) {
+                        if (!this.CAVs[cavParts[0]]) {
+                            this.CAVs[cavParts[0]] = {};
+                        }
+                        if (!this.CAVs[cavParts[0]][cavParts[1]]) {
+                            this.CAVs[cavParts[0]][cavParts[1]] = {};
+                        }
+                        this.CAVs[cavParts[0]][cavParts[1]][cavParts[2]] = cav;
+                    }
+                });
+                
+                console.log("Domain CAVs:", this.CAVs);
+                return cavs;
+            }
+
+            /**
+             * Update CAVs for the current call
+             */
+            async updateCavs(cavsToUpdate) {
+                if (!this.currentCall) {
+                    console.error("No active call to update CAVs");
+                    return { status: "ERROR", message: "No active call" };
+                }
+                
+                let endpointUrl = `${this.base_api_url_agents}/agents/${this.f9UserId}/interactions/calls/${this.currentCall.id}/variables_2`;
+                return this.f9ApiMethod(endpointUrl, "PUT", cavsToUpdate);
+            }
+        }
+
+        function onDocumentReady(fn) {
+            if (document.readyState !== "loading") {
+                fn();
+            } else {
+                document.addEventListener("DOMContentLoaded", fn);
+            }
+        }
+
+        onDocumentReady(async function () {
+            const statusElement = document.getElementById('status');
+            
+            statusElement.textContent = "Connecting to Five9...";
+            
+            const session = new Five9Session();
+            const metadataObtained = await session.getSessionMetadata();
+            
+            if (metadataObtained === true) {
+                statusElement.textContent = "Connected! Waiting for calls...";
+                statusElement.classList.add('font-semibold');
+                
+                // Get domain CAVs on startup
+                await session.getDomainCavs();
+                
+                // Verify the Salesforce.id CAV exists
+                if (session.CAVs && session.CAVs.Salesforce && session.CAVs.Salesforce.id) {
+                    console.log(`✓ CAV "${SALESFORCE_CAV_NAME}" found and ready`);
+                    statusElement.textContent = `Connected! CAV "${SALESFORCE_CAV_NAME}" ready. Waiting for calls...`;
+                } else {
+                    console.warn(`⚠ CAV "${SALESFORCE_CAV_NAME}" not found in domain`);
+                    statusElement.textContent = `Warning: CAV "${SALESFORCE_CAV_NAME}" not found. Please add it to your domain.`;
+                    statusElement.classList.add('text-red-600');
+                }
+                
+                // Start agent websocket
+                let agentWebSocket = session.connectAgentWebsocket();
+            } else {
+                statusElement.textContent = "Failed to connect. Please ensure you are logged into Five9.";
+                statusElement.classList.add('text-red-600');
+            }
+        });
+    </script>
+</body>
+
+</html>
