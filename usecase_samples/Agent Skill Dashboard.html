@@ -192,11 +192,13 @@
                  *
                  * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
                  */
-                async connectAgentWebsocket(f9socketEventHandlers = {}) {
+                async connectAgentWebsocket(f9socketEventHandlers = this.agentSocketEventHandlers || {}) {
                     // merge the common socket event handlers with the agent specific ones
                     f9socketEventHandlers = Object.assign(f9socketEventHandlers, this.commonSocketEventHanders);
-
-                    return this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                    this.agentSocketEventHandlers = f9socketEventHandlers;
+                    this.agentSocket?.close();
+                    this.agentSocket = await this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                    return this.agentSocket;
                 }
 
                 /**
@@ -248,7 +250,9 @@
 
                         // Throw an error if the response is not ok
                         if (!response.ok) {
-                            throw new Error(`Error fetching ${endpointURL}`);
+                            const errorBody = await response.json().catch(() => null);
+                            const detail = errorBody?.five9ExceptionDetail?.message;
+                            throw new Error(`Five9 request failed (${response.status})${detail ? `: ${detail}` : ""}`);
                         }
 
                         // Parse the response JSON
@@ -311,7 +315,7 @@
                         this.base_websocket_api_url_supervisor = `${this.base_ws_url}${this.contextPaths.websocket_super}`;
 
                         // Log the successful acquisition of metadata
-                        console.log(`Metadata successfully acquired\norgId: \t${this.f9OrgId}\nuserId: \t${this.f9UserId}\ntokenId: \t${this.f9TokenId}`);
+                        console.log("Session metadata successfully acquired");
 
                         // Return true to indicate successful metadata acquisition
                         return true;
@@ -739,7 +743,7 @@
                  * addCampaignToConference adds a campaign to conference. Set warm=true for a warm transfer (1st party on hold).
                  *
                  * Five9 VCC Agent API Method:
-                 *   PUT /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+                 *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
                  */
                 async addCampaignToConference(campaignId = "1140040", warm = false) {
                     const activeCalls = await this.getCurrentCalls();
@@ -905,17 +909,17 @@
                                 console.log(eventData);
                                 console.log(Object.entries(eventData.payLoad));
                                 for (const [skillId, skillData] of Object.entries(eventData.payLoad)) {
-                                    const callsInQueueCell = document.querySelector(`.${skillId}-callsInQueue`);
+                                    const callsInQueueCell = document.querySelector(`.${CSS.escape(`${skillId}-callsInQueue`)}`);
                                     if (callsInQueueCell) {
                                         callsInQueueCell.textContent = skillData.inQueueCallCount;
                                     }
 
-                                    const queueCallbacksCell = document.querySelector(`.${skillId}-queueCallbacks`);
+                                    const queueCallbacksCell = document.querySelector(`.${CSS.escape(`${skillId}-queueCallbacks`)}`);
                                     if (queueCallbacksCell) {
                                         queueCallbacksCell.textContent = skillData.inQueueCallbackCount;
                                     }
 
-                                    const longestCell = document.querySelector(`.${skillId}-longest`);
+                                    const longestCell = document.querySelector(`.${CSS.escape(`${skillId}-longest`)}`);
                                     if (longestCell) {
                                         longestCell.textContent = skillData.longestTimeInQueueSec;
                                     }

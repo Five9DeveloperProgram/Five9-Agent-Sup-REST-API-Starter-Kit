@@ -209,11 +209,13 @@
              *
              * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
              */
-            async connectAgentWebsocket(f9socketEventHandlers = {}) {
+            async connectAgentWebsocket(f9socketEventHandlers = this.agentSocketEventHandlers || {}) {
                 // merge the common socket event handlers with the agent specific ones
                 f9socketEventHandlers = Object.assign(f9socketEventHandlers, this.commonSocketEventHanders);
-
-                return this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                this.agentSocketEventHandlers = f9socketEventHandlers;
+                this.agentSocket?.close();
+                this.agentSocket = await this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                return this.agentSocket;
             }
 
             /**
@@ -265,7 +267,9 @@
 
                     // Throw an error if the response is not ok
                     if (!response.ok) {
-                        throw new Error(`Error fetching ${endpointURL}`);
+                        const errorBody = await response.json().catch(() => null);
+                        const detail = errorBody?.five9ExceptionDetail?.message;
+                        throw new Error(`Five9 request failed (${response.status})${detail ? `: ${detail}` : ""}`);
                     }
 
                     // Parse the response JSON
@@ -328,7 +332,7 @@
                     this.base_websocket_api_url_supervisor = `${this.base_ws_url}${this.contextPaths.websocket_super}`;
 
                     // Log the successful acquisition of metadata
-                    console.log(`Metadata successfully acquired\norgId: \t${this.f9OrgId}\nuserId: \t${this.f9UserId}\ntokenId: \t${this.f9TokenId}`);
+                    console.log("Session metadata successfully acquired");
 
                     // Return true to indicate successful metadata acquisition
                     return true;
@@ -756,7 +760,7 @@
              * addCampaignToConference adds a campaign to conference. Set warm=true for a warm transfer (1st party on hold).
              *
              * Five9 VCC Agent API Method:
-             *   PUT /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+             *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
              */
             async addCampaignToConference(campaignId = "1140040", warm = false) {
                 const activeCalls = await this.getCurrentCalls();
@@ -933,20 +937,28 @@
             const session = new Five9Session();
             const metadataObtained = await session.getSessionMetadata();
             if (metadataObtained === true) {
-                console.info("Session Metadata:", session);
+                console.info("Session metadata ready");
 
                 document.querySelector(".transfer-controls").style.display = "none";
 
                 // get the domain speed dials and then render them as buttons in the speed-dials div
                 const speedDials = await session.getDomainSpeedDials();
+                if (!Array.isArray(speedDials)) {
+                    window.alert("Unable to retrieve speed dials");
+                    return;
+                }
                 console.log(speedDials);
                 speedDials.forEach((speedDial) => {
                     // only render speed dials that start with the filter prefix
-                    if (speedDial.description.startsWith(speedDialFilterPrefix)) {
-                        document.querySelector("#speed-dials").insertAdjacentHTML(
-                            "beforeend",
-                            `<p><button type="button" class="btn btn-primary trigger-conference sticky-top" destination="${speedDial.number}">${speedDial.description}</button></p>`
-                        );
+                    if (speedDial.description?.startsWith(speedDialFilterPrefix)) {
+                        const paragraph = document.createElement("p");
+                        const button = document.createElement("button");
+                        button.type = "button";
+                        button.className = "btn btn-primary trigger-conference sticky-top";
+                        button.setAttribute("destination", speedDial.number);
+                        button.textContent = speedDial.description;
+                        paragraph.appendChild(button);
+                        document.querySelector("#speed-dials").appendChild(paragraph);
                     }
                 });
 
@@ -955,8 +967,14 @@
                     button.addEventListener("click", async function (event) {
                         const destination = event.currentTarget.getAttribute("destination");
                         const calls = await session.getCurrentCalls();
+                        if (!calls?.length) {
+                            window.alert("No active call is available for conference");
+                            return;
+                        }
                         console.log("destination: " + destination);
-                        await session.initiateConferenceTransfer(calls[0].id, destination, false);
+                        if (await session.initiateConferenceTransfer(calls[0].id, destination, false) === null) {
+                            window.alert("Five9 rejected the conference request");
+                        }
                     });
                 });
 
@@ -964,23 +982,41 @@
                     button.addEventListener("click", async function (event) {
                         const targetDisposition = event.currentTarget.getAttribute("disposition");
                         const calls = await session.getCurrentCalls();
+                        if (!calls?.length) {
+                            window.alert("No active call is available to leave");
+                            return;
+                        }
                         const dispositionInfo = await session.getCampaignDispositions(calls[0].campaignId);
                         let dispositionId;
-                        dispositionInfo.dispositions.forEach((dispo) => {
-                            if (dispo.name === targetDisposition) {
+                        dispositionInfo?.dispositions?.forEach((dispo) => {
+                            if (dispo.name === targetDisposition && dispo.channelTypes?.CALL?.filters?.includes("VOICE_END_CONFERENCE")) {
                                 dispositionId = dispo.id;
                             }
                         });
+                        if (dispositionId == null) {
+                            window.alert("The configured disposition is not available for this campaign");
+                            return;
+                        }
                         console.log("Leaving Conference with Disposition: " + dispositionId);
-                        await session.leaveConference(calls[0].id, dispositionId);
+                        if (await session.leaveConference(calls[0].id, dispositionId) === null) {
+                            window.alert("Five9 rejected the leave-conference request");
+                        }
                     });
                 });
 
                 document.querySelectorAll(".disconnect-conference-participants").forEach((button) => {
                     button.addEventListener("click", async function () {
                         const calls = await session.getCurrentCalls();
-                        for (let i = 1; i < calls.length; i++) {
-                            await session.disconnectConferenceParticipant(calls[i].id);
+                        const participants = calls?.filter(call => call.state?.startsWith("CONFERENCE_PARTICIPANT_"));
+                        if (!participants?.length) {
+                            window.alert("No conference participant is available to disconnect");
+                            return;
+                        }
+                        for (const participant of participants) {
+                            if (await session.disconnectConferenceParticipant(participant.id) === null) {
+                                window.alert("Five9 rejected the participant removal request");
+                                return;
+                            }
                         }
                         document.querySelector(".transfer-controls").style.display = "none";
                     });

@@ -155,21 +155,10 @@
                         async function (eventData) {
                             console.log(this.eventName, eventData.context.eventReason);
                             console.log(eventData);
-                            this.session.base_api_url_agents =
-                                this.session.newMetadata.dataCenters[0].apiUrls.appsvcs +
-                                this.session.contextPaths.agent_rest;
-                            this.session.base_api_url_supervisors =
-                                this.session.newMetadata.dataCenters[0].apiUrls.supsvcs +
-                                this.session.contextPaths.sup_rest;
-                            this.session.base_websocket_api_url_agent =
-                                this.session.newMetadata.dataCenters[0].apiUrls.appsvcs +
-                                this.session.contextPaths.websocket_agent;
-                            this.session.base_websocket_api_url_super =
-                                this.session.newMetadata.dataCenters[0].apiUrls.supsvcs +
-                                this.session.contextPaths.websocket_super;
-                            this.session.baseURL =
-                                this.session.newMetadata.dataCenters[0].apiUrls.appsvcs;
-                            this.session.connectAgentWebsocket();
+                            if (this.session.newMetadata) {
+                                this.session.setEndpoints(this.session.newMetadata);
+                                await this.session.connectAgentWebsocket();
+                            }
                         },
                         this
                     ),
@@ -177,6 +166,16 @@
 
                 this.currentCall = null;
                 this.CAVs = null;
+            }
+
+            setEndpoints(metadata) {
+                const endpoint = metadata.dataCenters[0].apiUrls[0];
+                this.baseURL = `https://${endpoint.host}:${endpoint.port}`;
+                const websocketBase = `wss://${endpoint.host}:${endpoint.port}`;
+                this.base_api_url_agents = this.baseURL + this.contextPaths.agent_rest;
+                this.base_api_url_supervisors = this.baseURL + this.contextPaths.sup_rest;
+                this.base_websocket_api_url_agent = websocketBase + this.contextPaths.websocket_agent;
+                this.base_websocket_api_url_super = websocketBase + this.contextPaths.websocket_super;
             }
 
             /**
@@ -201,22 +200,7 @@
                     this.f9UserId = result.userId;
                     this.farmId = result.farmId;
 
-                    // Extract and build API URLs from the data centers information
-                    this.base_api_url_agents =
-                        result.dataCenters[0].apiUrls.appsvcs +
-                        this.contextPaths.agent_rest;
-                    this.base_api_url_supervisors =
-                        result.dataCenters[0].apiUrls.supsvcs +
-                        this.contextPaths.sup_rest;
-                    this.base_websocket_api_url_agent =
-                        result.dataCenters[0].apiUrls.appsvcs +
-                        this.contextPaths.websocket_agent;
-                    this.base_websocket_api_url_super =
-                        result.dataCenters[0].apiUrls.supsvcs +
-                        this.contextPaths.websocket_super;
-
-                    // Build additional URLs for reference
-                    this.baseURL = result.dataCenters[0].apiUrls.appsvcs;
+                    this.setEndpoints(result.metadata);
 
                     return true;
                 } catch (e) {
@@ -234,7 +218,7 @@
              */
             async connectSocket(url, f9socketEventHandlers) {
                 // Construct the complete WebSocket URL
-                const thisSocketUrl = `wss:${url}`;
+                const thisSocketUrl = url;
                 const f9Socket = new WebSocket(thisSocketUrl);
                 console.log(`Connecting to ${thisSocketUrl}`);
 
@@ -390,10 +374,12 @@
                     this.commonSocketEventHanders
                 );
 
-                return this.connectSocket(
+                this.agentSocket?.close();
+                this.agentSocket = await this.connectSocket(
                     this.base_websocket_api_url_agent,
                     f9SocketEventHandlersAgent
                 );
+                return this.agentSocket;
             }
 
             /**
@@ -463,7 +449,7 @@
                 // Organize CAVs into a nested object structure for easy access
                 this.CAVs = {};
                 cavs.forEach(cav => {
-                    let cavParts = cav.name.split(".");
+                    let cavParts = (cav.group ? `${cav.group}.${cav.name}` : cav.name).split(".");
                     if (cavParts.length === 1) {
                         this.CAVs[cav.name] = cav;
                     } else if (cavParts.length === 2) {

@@ -181,11 +181,13 @@
                  *
                  * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
                  */
-                async connectAgentWebsocket(f9socketEventHandlers = {}) {
+                async connectAgentWebsocket(f9socketEventHandlers = this.agentSocketEventHandlers || {}) {
                     // merge the common socket event handlers with the agent specific ones
                     f9socketEventHandlers = Object.assign(f9socketEventHandlers, this.commonSocketEventHanders);
-
-                    return this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                    this.agentSocketEventHandlers = f9socketEventHandlers;
+                    this.agentSocket?.close();
+                    this.agentSocket = await this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                    return this.agentSocket;
                 }
 
                 /**
@@ -237,7 +239,9 @@
 
                         // Throw an error if the response is not ok
                         if (!response.ok) {
-                            throw new Error(`Error fetching ${endpointURL}`);
+                            const errorBody = await response.json().catch(() => null);
+                            const detail = errorBody?.five9ExceptionDetail?.message;
+                            throw new Error(`Five9 request failed (${response.status})${detail ? `: ${detail}` : ""}`);
                         }
 
                         // Parse the response JSON
@@ -300,7 +304,7 @@
                         this.base_websocket_api_url_supervisor = `${this.base_ws_url}${this.contextPaths.websocket_super}`;
 
                         // Log the successful acquisition of metadata
-                        console.log(`Metadata successfully acquired\norgId: \t${this.f9OrgId}\nuserId: \t${this.f9UserId}\ntokenId: \t${this.f9TokenId}`);
+                        console.log("Session metadata successfully acquired");
 
                         // Return true to indicate successful metadata acquisition
                         return true;
@@ -741,7 +745,7 @@
                  * addCampaignToConference adds a campaign to conference. Set warm=true for a warm transfer (1st party on hold).
                  *
                  * Five9 VCC Agent API Method:
-                 *   PUT /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+                 *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
                  */
                 async addCampaignToConference(campaignId = "1140040", warm = false) {
                     const activeCalls = await this.getCurrentCalls();
@@ -883,25 +887,33 @@
 
                     document.querySelectorAll(".end-call").forEach((button) => {
                         button.addEventListener("click", async function (event) {
-                            const targetDisposition = event.currentTarget.getAttribute("disposition");
-                            let dispositionId;
-
-                            // obtain current call Id
-                            const calls = await session.getCurrentCalls();
-
-                            // obtain available dispositions for current call campaign
-                            const dispositionInfo = await session.getCampaignDispositions(calls[0].campaignId);
-
-                            // loop through the dispositions, and if the disposition name matches the desired dispo,
-                            // end the call with that dispositionId
-                            dispositionInfo.dispositions.forEach((dispo) => {
-                                if (dispo.name === targetDisposition) {
-                                    dispositionId = dispo.id;
+                            button.disabled = true;
+                            try {
+                                const targetDisposition = event.currentTarget.getAttribute("disposition");
+                                const calls = await session.getCurrentCalls();
+                                if (!calls?.length) {
+                                    throw new Error("No active call is available to disposition");
                                 }
-                            });
-
-                            console.log("Ending current call with dispositionId: " + dispositionId);
-                            await session.disposeCurrentCall(calls[0].id, dispositionId);
+                                const dispositionInfo = await session.getCampaignDispositions(calls[0].campaignId);
+                                const disposition = dispositionInfo?.dispositions?.find(disposition => disposition.name === targetDisposition);
+                                if (!disposition) {
+                                    throw new Error("The configured disposition is not available for this campaign");
+                                }
+                                if (!disposition.channelTypes?.CALL?.filters?.includes("VOICE_DISPOSE_CALL_OR_VOICEMAIL")) {
+                                    throw new Error("The configured disposition cannot be used to end this call");
+                                }
+                                if (disposition.flags?.includes("MUST_CONFIRM") && !window.confirm(`End the call with "${disposition.name}"?`)) {
+                                    return;
+                                }
+                                const result = await session.disposeCurrentCall(calls[0].id, disposition.id);
+                                if (result === null) {
+                                    throw new Error("Five9 rejected the disposition request; check the console for details");
+                                }
+                            } catch (error) {
+                                window.alert(error.message);
+                            } finally {
+                                button.disabled = false;
+                            }
                         });
                     });
                 } else {

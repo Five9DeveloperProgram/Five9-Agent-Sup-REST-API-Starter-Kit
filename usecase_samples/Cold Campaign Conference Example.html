@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cold Campaign Conference Example</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta2/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-BmbxuPwQa2lc/FVzBcNJ7UAyJxM6wuqIj61tLrc4wSX0szH/Ev+nYRRuWlolflfl"
+        crossorigin="anonymous">
+</head>
+
+<body>
+    <main class="container py-4" style="max-width: 42rem;">
+        <h1 class="h3 mb-4">Cold Campaign Conference</h1>
+
+        <div class="mb-3">
+            <label for="campaign" class="form-label">Destination campaign</label>
+            <select id="campaign" class="form-select" disabled>
+                <option value="">Loading campaigns...</option>
+            </select>
+        </div>
+
+        <button id="conference" type="button" class="btn btn-primary" disabled>
+            Start cold campaign conference
+        </button>
+
+        <div id="status" class="mt-3" role="status" aria-live="polite">Connecting to Five9...</div>
+    </main>
+
+    <script>
+        class Five9Session {
+            constructor() {
+                this.freedomMetadataURL = "https://app.five9.com/appsvcs/rs/svc/auth/metadata";
+                this.defaultRequestOptions = {
+                    credentials: "include",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                };
+            }
+
+            async request(endpointURL, method = "GET", payload = undefined) {
+                const requestOptions = {
+                    ...this.defaultRequestOptions,
+                    headers: { ...this.defaultRequestOptions.headers },
+                    method: method,
+                };
+
+                if (payload !== undefined) {
+                    requestOptions.body = JSON.stringify(payload);
+                }
+
+                const response = await fetch(endpointURL, requestOptions);
+                if (!response.ok) {
+                    const responseText = await response.text();
+                    throw new Error(`${method} ${endpointURL} failed (${response.status}): ${responseText}`);
+                }
+
+                if (response.status === 204) {
+                    return null;
+                }
+
+                const responseText = await response.text();
+                return responseText ? JSON.parse(responseText) : null;
+            }
+
+            async getSessionMetadata() {
+                const response = await fetch(this.freedomMetadataURL, {
+                    credentials: "include",
+                });
+                if (!response.ok) {
+                    throw new Error("Could not obtain Five9 session metadata");
+                }
+
+                const metadataResponse = await response.json();
+                const apiLocation = metadataResponse.metadata.dataCenters[0].apiUrls[0];
+
+                this.f9UserId = metadataResponse.userId;
+                this.baseApiUrl = `https://${apiLocation.host}:${apiLocation.port}/appsvcs/rs/svc`;
+            }
+
+            /**
+             * Returns inbound campaigns that can be added as conference participants.
+             *
+             * Five9 VCC Agent API Method:
+             *   GET /agents/{agentId}/campaigns
+             */
+            async getInboundCampaigns() {
+                const endpointURL = `${this.baseApiUrl}/agents/${this.f9UserId}/campaigns`;
+                return this.request(endpointURL);
+            }
+
+            /**
+             * Returns calls with which the current agent can work.
+             *
+             * Five9 VCC Agent API Method:
+             *   GET /agents/{agentId}/interactions/calls
+             */
+            async getCurrentCalls() {
+                const endpointURL = `${this.baseApiUrl}/agents/${this.f9UserId}/interactions/calls`;
+                return this.request(endpointURL);
+            }
+
+            /**
+             * Adds a campaign to the active call in cold mode.
+             * Requires the CAN_CREATE_CONFERENCE_WITH_CAMPAIGN permission.
+             *
+             * Five9 VCC Agent API Method:
+             *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+             *
+             * Request body:
+             *   { "campaignId": "<campaign ID>", "warm": false }
+             */
+            async startColdCampaignConference(callId, campaignId) {
+                const endpointURL = `${this.baseApiUrl}/agents/${this.f9UserId}/interactions/calls/${callId}/add_campaign_to_conference`;
+                const participant = {
+                    campaignId: campaignId,
+                    warm: false,
+                };
+
+                return this.request(endpointURL, "POST", participant);
+            }
+        }
+
+        const campaignSelect = document.getElementById("campaign");
+        const conferenceButton = document.getElementById("conference");
+        const statusElement = document.getElementById("status");
+        const session = new Five9Session();
+
+        function setStatus(message, isError = false) {
+            statusElement.textContent = message;
+            statusElement.className = isError ? "mt-3 text-danger" : "mt-3 text-success";
+        }
+
+        async function initialize() {
+            try {
+                await session.getSessionMetadata();
+                const campaigns = await session.getInboundCampaigns();
+
+                campaignSelect.replaceChildren(new Option("Select a campaign", ""));
+                campaigns
+                    .sort((firstCampaign, secondCampaign) => firstCampaign.name.localeCompare(secondCampaign.name))
+                    .forEach((campaign) => {
+                        campaignSelect.add(new Option(campaign.name, campaign.id));
+                    });
+
+                campaignSelect.disabled = campaigns.length === 0;
+                setStatus(campaigns.length === 0 ? "No inbound campaign destinations are available." : "Ready.", campaigns.length === 0);
+            } catch (error) {
+                console.error(error);
+                campaignSelect.replaceChildren(new Option("Campaigns unavailable", ""));
+                setStatus("Unable to connect. Log in to Five9 in another browser tab, then reload this page.", true);
+            }
+        }
+
+        campaignSelect.addEventListener("change", () => {
+            conferenceButton.disabled = campaignSelect.value === "";
+        });
+
+        conferenceButton.addEventListener("click", async () => {
+            const campaignId = campaignSelect.value;
+            const campaignName = campaignSelect.options[campaignSelect.selectedIndex].text;
+            const confirmed = window.confirm(`Start a cold campaign conference with "${campaignName}"? This affects the live call immediately.`);
+
+            if (!confirmed) {
+                return;
+            }
+
+            conferenceButton.disabled = true;
+            campaignSelect.disabled = true;
+            setStatus("Starting cold campaign conference...");
+
+            try {
+                const calls = await session.getCurrentCalls();
+                if (!calls || calls.length === 0) {
+                    throw new Error("No active call is available for a campaign conference");
+                }
+
+                await session.startColdCampaignConference(calls[0].id, campaignId);
+                setStatus(`Cold campaign conference with "${campaignName}" started.`);
+            } catch (error) {
+                console.error(error);
+                setStatus(error.message, true);
+            } finally {
+                campaignSelect.disabled = false;
+                conferenceButton.disabled = campaignSelect.value === "";
+            }
+        });
+
+        initialize();
+    </script>
+</body>
+
+</html>

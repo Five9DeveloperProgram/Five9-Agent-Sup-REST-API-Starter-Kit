@@ -185,11 +185,13 @@
                  *
                  * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
                  */
-                async connectAgentWebsocket(f9socketEventHandlers = {}) {
+                async connectAgentWebsocket(f9socketEventHandlers = this.agentSocketEventHandlers || {}) {
                     // merge the common socket event handlers with the agent specific ones
                     f9socketEventHandlers = Object.assign(f9socketEventHandlers, this.commonSocketEventHanders);
-
-                    return this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                    this.agentSocketEventHandlers = f9socketEventHandlers;
+                    this.agentSocket?.close();
+                    this.agentSocket = await this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                    return this.agentSocket;
                 }
 
                 /**
@@ -241,7 +243,9 @@
 
                         // Throw an error if the response is not ok
                         if (!response.ok) {
-                            throw new Error(`Error fetching ${endpointURL}`);
+                            const errorBody = await response.json().catch(() => null);
+                            const detail = errorBody?.five9ExceptionDetail?.message;
+                            throw new Error(`Five9 request failed (${response.status})${detail ? `: ${detail}` : ""}`);
                         }
 
                         // Parse the response JSON
@@ -304,7 +308,7 @@
                         this.base_websocket_api_url_supervisor = `${this.base_ws_url}${this.contextPaths.websocket_super}`;
 
                         // Log the successful acquisition of metadata
-                        console.log(`Metadata successfully acquired\norgId: \t${this.f9OrgId}\nuserId: \t${this.f9UserId}\ntokenId: \t${this.f9TokenId}`);
+                        console.log("Session metadata successfully acquired");
 
                         // Return true to indicate successful metadata acquisition
                         return true;
@@ -733,7 +737,7 @@
                  * addCampaignToConference adds a campaign to conference. Set warm=true for a warm transfer (1st party on hold).
                  *
                  * Five9 VCC Agent API Method:
-                 *   PUT /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+                 *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
                  */
                 async addCampaignToConference(campaignId = "1140040", warm = false) {
                     const activeCalls = await this.getCurrentCalls();
@@ -865,7 +869,10 @@
                  */
                 async initiateTransferToSpeedDial(callId, speedDialDescription, dispositionId = "-23", dispositionTimeout = 300000, timeout = 0, warm = true, skipDNCCheck = false) {
                     const speedDials = await this.getDomainSpeedDials();
-                    const speedDial = speedDials.find((sd) => sd.description === speedDialDescription);
+                    const speedDial = speedDials?.find((sd) => sd.description === speedDialDescription);
+                    if (!speedDial) {
+                        throw new Error("The configured speed dial is not available");
+                    }
                     const speedDialTransferDestinationInfo = {
                         destination: {
                             skipDNCCheck: skipDNCCheck,
@@ -895,6 +902,12 @@
                     console.log(endpointURL);
                     return this.f9ApiMethod(endpointURL, "PUT", campaignTransferDestinationInfo);
                 }
+
+                /** GET /agents/{agentId}/campaigns - inbound transfer destinations. */
+                async getInboundCampaigns() {
+                    const endpointURL = `${this.base_api_url_agents}/agents/${this.f9UserId}/campaigns`;
+                    return this.f9ApiMethod(endpointURL, "GET");
+                }
             }
 
             function onDocumentReady(fn) {
@@ -914,24 +927,36 @@
 
                     document.querySelectorAll(".trigger-transfer").forEach(function (button) {
                         button.addEventListener("click", async function (event) {
-                            const destination = event.currentTarget.getAttribute("destination").split(":");
-
-                            const calls = await session.getCurrentCalls();
-                            const callId = calls[0].id;
-                            console.log("destination: " + destination);
-
-                            if (destination[0] === "campaign") {
-                                const agentCampaigns = await session.getAgentCampaigns();
-                                const targetCampaign = agentCampaigns[destination[1]];
-                                await session.initiateTransferToCampaign(callId, targetCampaign.id);
-                            }
-
-                            if (destination[0] === "external") {
-                                await session.initiateTransferToExternal(destination[1], "-23", 300000, 0, true);
-                            }
-
-                            if (destination[0] === "speed") {
-                                await session.initiateTransferToSpeedDial(callId, destination[1]);
+                            button.disabled = true;
+                            try {
+                                const destination = event.currentTarget.getAttribute("destination").split(":");
+                                const calls = await session.getCurrentCalls();
+                                if (!calls?.length) {
+                                    throw new Error("No active call is available for transfer");
+                                }
+                                const callId = calls[0].id;
+                                let result;
+                                if (destination[0] === "campaign") {
+                                    const agentCampaigns = await session.getInboundCampaigns();
+                                    const targetCampaign = agentCampaigns?.find(campaign => campaign.name === destination[1]);
+                                    if (!targetCampaign) {
+                                        throw new Error("The configured campaign is not available");
+                                    }
+                                    result = await session.initiateTransferToCampaign(callId, targetCampaign.id);
+                                } else if (destination[0] === "external") {
+                                    result = await session.initiateTransferToExternal(destination[1], "-23", 300000, 0, true);
+                                } else if (destination[0] === "speed") {
+                                    result = await session.initiateTransferToSpeedDial(callId, destination[1]);
+                                } else {
+                                    throw new Error("Unknown transfer destination type");
+                                }
+                                if (result === null) {
+                                    throw new Error("Five9 rejected the transfer request; check the console for details");
+                                }
+                            } catch (error) {
+                                window.alert(error.message);
+                            } finally {
+                                button.disabled = false;
                             }
                         });
                     });

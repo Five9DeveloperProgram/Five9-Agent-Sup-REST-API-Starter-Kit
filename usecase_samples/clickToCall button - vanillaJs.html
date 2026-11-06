@@ -21,159 +21,109 @@
     <div id="message-div" class="bg-white p-4 rounded shadow-md"></div>
 
     <script type="text/javascript">
-        let freedomMetadataURL = "https://app.five9.com/appsvcs/rs/svc/auth/metadata";
-        let five9SessionData;
-
-        let contextPaths = {
-            "agent_rest": "/appsvcs/rs/svc",
-            "agent_str": "/strsvcs/rs/svc",
-            "sup_rest": "/supsvcs/rs/svc"
-        }
-
-        let base_api_url;
-        let base_agents_api_url;
-        let base_supervisor_api_url;
-
-        let f9OrgId;
-        let f9UserId;
-
-        let DEFAULT_CAMPAIGN_NAME = undefined;
-
-        // HTTP Request Wrapper
-        function httpRequest(url, method, callback, data = null) {
-            const options = {
-                method: method,
-                mode: 'cors',
-                credentials: 'include'
-            };
-
-            if (data) {
-                options.headers = {
-                    'Content-Type': 'application/json'
+        class Five9Session {
+            constructor() {
+                this.freedomMetadataURL = "https://app.five9.com/appsvcs/rs/svc/auth/metadata";
+                this.defaultXhrOptions = {
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
                 };
-                options.body = JSON.stringify(data);
             }
 
-            fetch(url, options)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! Status: ${response.status}`);
-                        document.getElementById('message-div').textContent = error;
-                    } else {
-                        document.getElementById('message-div').textContent = "Success: " + JSON.stringify(data, null, 2);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-
-                    callback(data)
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    //document.getElementById('message-div').textContent = error;
-                });
-        }
-
-        // Five9 API Wrappers
-        // getCampaignInfo() - Get Campaign Info by Campaign ID to obtain Campaign Name
-        function getCampaignInfo(campaignId, callback) {
-            httpRequest(`${base_agents_api_url}/orgs/${f9OrgId}/campaigns/${campaignId}`, 'GET', callback);
-        }
-        
-        // getAgentCampaigns() - Get Agent Campaigns by Agent ID to obtain Campaign IDs that the agent can call from
-        // based on the assigned skills for the agent
-        function getAgentCampaigns(callback) {
-            let agentCampaignsInfo = {};
-            let endpointURL = `${base_agents_api_url}/agents/${f9UserId}/campaigns_config`;
-        
-            httpRequest(endpointURL, 'GET', function (res) {
-                let promises = [];
-                
-                // Loop through each campaign ID and get the campaign info
-                res.campaignIds.forEach(function (campaignId, index) {
-                    promises.push(new Promise(resolve => {
-                        getCampaignInfo(campaignId, function (campaign) {
-                            agentCampaignsInfo[campaign.name] = campaign;
-                            resolve();
-                        });
-                    }));
-                });
-        
-                Promise.all(promises).then(() => {
-                    callback(agentCampaignsInfo);
-                });
-            });
-        }
-        
-        // callExternalNumber() - Make an external call to a number
-        function callExternalNumber(dnis, campaignName = null, campaignId = null) {
-            let ExternalCallDestinationInfo = {
-                number: dnis,
-                campaignId: campaignId
-            };
-        
-            if (campaignId == null) {
-                // If campaignId is not provided, get the campaignId from the campaignName
-                getAgentCampaigns(function (agentCampaigns) {
-                    ExternalCallDestinationInfo["campaignId"] = agentCampaigns[campaignName].id;
-        
-                    if (ExternalCallDestinationInfo["campaignId"] == null) {
-                        console.log("callExternalNumber() did not find a valid campaign name");
-                    }
-        
-                    let endpointURL = `${base_agents_api_url}/agents/${f9UserId}/interactions/make_external_call`;
-                    httpRequest(endpointURL, 'POST', function (success_response) {
-                        console.log("Making External Call");
-                        console.log(success_response);
-                    }, ExternalCallDestinationInfo);
-                });
-            }
-        }
-        
-        // clickToCallButton handles the click event of the button
-        function clickToCallButton(dnis, campaignName = null, campaignId = null) {
-            httpRequest(freedomMetadataURL, 'GET', function (data) {
-                five9SessionData = data;
-                f9OrgId = five9SessionData.orgId;
-                f9UserId = five9SessionData.userId;
-        
-                base_api_url = `https://${five9SessionData.metadata.dataCenters[0].apiUrls[0].host}:${five9SessionData.metadata.dataCenters[0].apiUrls[0].port}`;
-                base_agents_api_url = `${base_api_url}${contextPaths.agent_rest}`;
-                base_supervisor_api_url = `${base_api_url}${contextPaths.sup_rest}`;
-        
-                if (!campaignName) {
-                    getAgentCampaigns(function(agentCampaigns) {
-                        const campaignNames = Object.keys(agentCampaigns);
-                        if (campaignNames.length > 0) {
-                            Swal.fire({
-                                title: 'Select a Campaign',
-                                input: 'select',
-                                inputOptions: campaignNames.reduce((obj, name) => {
-                                    obj[name] = name;
-                                    return obj;
-                                }, {}),
-                                inputPlaceholder: 'Select a campaign',
-                                showCancelButton: true
-                            }).then((result) => {
-                                if (result.isConfirmed) {
-                                    callExternalNumber(dnis, result.value);
-                                }
-                            });
-                        }
-                    });
-                } else {
-                    callExternalNumber(dnis, campaignName, campaignId);
+            async f9ApiMethod(endpointURL, method = "GET", payload = undefined) {
+                const options = { ...this.defaultXhrOptions, method };
+                if (payload !== undefined) {
+                    options.body = JSON.stringify(payload);
                 }
-            });
+                const response = await fetch(endpointURL, options);
+                if (!response.ok) {
+                    throw new Error(`Five9 request failed (${response.status})`);
+                }
+                const text = await response.text();
+                return text ? JSON.parse(text) : null;
+            }
+
+            async getSessionMetadata() {
+                const metadata = await this.f9ApiMethod(this.freedomMetadataURL);
+                const endpoint = metadata.metadata.dataCenters[0].apiUrls[0];
+                this.f9OrgId = metadata.orgId;
+                this.f9UserId = metadata.userId;
+                this.base_api_url_agents = `https://${endpoint.host}:${endpoint.port}/appsvcs/rs/svc`;
+            }
+
+            /** GET /orgs/{orgId}/campaigns/{campaignId} */
+            async getCampaignInfo(campaignId) {
+                return this.f9ApiMethod(`${this.base_api_url_agents}/orgs/${this.f9OrgId}/campaigns/${campaignId}`);
+            }
+
+            /** GET /agents/{agentId}/campaigns_config */
+            async getAgentCampaigns() {
+                const response = await this.f9ApiMethod(`${this.base_api_url_agents}/agents/${this.f9UserId}/campaigns_config`);
+                const campaigns = await Promise.all(response.campaignIds.map(campaignId => this.getCampaignInfo(campaignId)));
+                return Object.fromEntries(campaigns.map(campaign => [campaign.name, campaign]));
+            }
+
+            /** POST /agents/{agentId}/interactions/make_external_call */
+            async callExternalNumber(dnis, campaignName = null, campaignId = null) {
+                if (!dnis?.trim()) {
+                    throw new Error("A destination number is required");
+                }
+                if (campaignId == null) {
+                    const campaigns = await this.getAgentCampaigns();
+                    campaignId = campaigns[campaignName]?.id;
+                }
+                if (!campaignId) {
+                    throw new Error("The selected campaign is not available to this agent");
+                }
+                return this.f9ApiMethod(`${this.base_api_url_agents}/agents/${this.f9UserId}/interactions/make_external_call`, "POST", {
+                    number: dnis.trim(),
+                    campaignId,
+                });
+            }
         }
-        
-        
-        // Add event listeners to all buttons with class "call-external"
+
+        async function clickToCallButton(dnis, campaignName = null, campaignId = null) {
+            const message = document.getElementById("message-div");
+            try {
+                const session = new Five9Session();
+                message.textContent = "Connecting to Five9...";
+                await session.getSessionMetadata();
+                if (!campaignName && campaignId == null) {
+                    const campaigns = await session.getAgentCampaigns();
+                    if (Object.keys(campaigns).length === 0) {
+                        throw new Error("No campaigns are available to this agent");
+                    }
+                    const result = await Swal.fire({
+                        title: "Select a Campaign",
+                        input: "select",
+                        inputOptions: Object.fromEntries(Object.keys(campaigns).map(name => [name, name])),
+                        inputPlaceholder: "Select a campaign",
+                        showCancelButton: true,
+                        inputValidator: value => value ? undefined : "Select a campaign",
+                    });
+                    if (!result.isConfirmed) {
+                        message.textContent = "Call canceled.";
+                        return;
+                    }
+                    campaignName = result.value;
+                }
+                await session.callExternalNumber(dnis, campaignName, campaignId);
+                message.textContent = "Call requested.";
+            } catch (error) {
+                message.textContent = error.message;
+            }
+        }
+
         document.addEventListener("DOMContentLoaded", function () {
             const buttons = document.querySelectorAll(".call-external");
             buttons.forEach(function (button) {
-                button.addEventListener("click", function () {
-                    clickToCallButton(button.textContent, DEFAULT_CAMPAIGN_NAME);
+                button.addEventListener("click", async function () {
+                    button.disabled = true;
+                    try {
+                        await clickToCallButton(button.textContent, button.getAttribute("targetCampaign"));
+                    } finally {
+                        button.disabled = false;
+                    }
                 });
             });
         });
