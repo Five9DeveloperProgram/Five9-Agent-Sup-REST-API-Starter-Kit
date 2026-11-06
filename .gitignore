@@ -1,6 +1,8 @@
 client_scripts/
 dni/
 
+agent_supervisor_rest_api_*.pdf
+
 # Windows image file caches
 Thumbs.db
 ehthumbs.db

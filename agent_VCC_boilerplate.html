@@ -393,11 +393,13 @@
              *
              * @param {Object} f9socketEventHandlers - An object containing event handlers for different event IDs.
              */
-            async connectAgentWebsocket(f9socketEventHandlers = {}) {
+            async connectAgentWebsocket(f9socketEventHandlers = this.agentSocketEventHandlers || {}) {
                 // merge the common socket event handlers with the agent specific ones
                 f9socketEventHandlers = Object.assign(f9socketEventHandlers, this.commonSocketEventHanders);
-
-                return this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                this.agentSocketEventHandlers = f9socketEventHandlers;
+                this.agentSocket?.close();
+                this.agentSocket = await this.connectSocket(this.base_websocket_api_url_agent, f9socketEventHandlers);
+                return this.agentSocket;
             }
 
             /**
@@ -449,7 +451,9 @@
 
                     // Throw an error if the response is not ok
                     if (!response.ok) {
-                        throw new Error(`Error fetching ${endpointURL}`);
+                        const errorBody = await response.json().catch(() => null);
+                        const detail = errorBody?.five9ExceptionDetail?.message;
+                        throw new Error(`Five9 request failed (${response.status})${detail ? `: ${detail}` : ""}`);
                     }
 
                     // Parse the response JSON
@@ -512,7 +516,7 @@
                     this.base_websocket_api_url_supervisor = `${this.base_ws_url}${this.contextPaths.websocket_super}`;
 
                     // Log the successful acquisition of metadata
-                    console.log(`Metadata successfully acquired\norgId: \t${this.f9OrgId}\nuserId: \t${this.f9UserId}\ntokenId: \t${this.f9TokenId}`);
+                    console.log("Session metadata successfully acquired");
 
                     // Return true to indicate successful metadata acquisition
                     return true;
@@ -941,7 +945,7 @@
              * addCampaignToConference adds a campaign to conference. Set warm=true for a warm transfer (1st party on hold).
              *
              * Five9 VCC Agent API Method:
-             *   PUT /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
+             *   POST /agents/{agentId}/interactions/calls/{callId}/add_campaign_to_conference
              */
             async addCampaignToConference(campaignId = "1140040", warm = false) {
                 const activeCalls = await this.getCurrentCalls();
